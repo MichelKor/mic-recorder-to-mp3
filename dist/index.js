@@ -15728,7 +15728,7 @@ var Encoder = function () {
 
 
   createClass(Encoder, [{
-    key: 'clearBuffer',
+    key: "clearBuffer",
     value: function clearBuffer() {
       this.dataBuffer = [];
     }
@@ -15739,7 +15739,7 @@ var Encoder = function () {
      */
 
   }, {
-    key: 'appendToBuffer',
+    key: "appendToBuffer",
     value: function appendToBuffer(buffer) {
       this.dataBuffer.push(new Int8Array(buffer));
     }
@@ -15751,11 +15751,11 @@ var Encoder = function () {
      */
 
   }, {
-    key: 'floatTo16BitPCM',
+    key: "floatTo16BitPCM",
     value: function floatTo16BitPCM(input, output) {
       for (var i = 0; i < input.length; i++) {
         var s = Math.max(-1, Math.min(1, input[i]));
-        output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
       }
     }
 
@@ -15765,7 +15765,7 @@ var Encoder = function () {
      */
 
   }, {
-    key: 'convertBuffer',
+    key: "convertBuffer",
     value: function convertBuffer(arrayBuffer) {
       var data = new Float32Array(arrayBuffer);
       var out = new Int16Array(arrayBuffer.length);
@@ -15780,7 +15780,7 @@ var Encoder = function () {
      */
 
   }, {
-    key: 'encode',
+    key: "encode",
     value: function encode(arrayBuffer) {
       this.samplesMono = this.convertBuffer(arrayBuffer);
       var remaining = this.samplesMono.length;
@@ -15798,7 +15798,7 @@ var Encoder = function () {
      */
 
   }, {
-    key: 'finish',
+    key: "finish",
     value: function finish() {
       this.appendToBuffer(this.mp3Encoder.flush());
 
@@ -15816,13 +15816,17 @@ var MicRecorder = function () {
       // 128 or 160 kbit/s – mid-range bitrate quality
       bitRate: 128,
 
+      deviceId: null,
+      // Encode to mp3 after finish recording
+      // Encoding during recording may result in distorted audio
+      // This could be crucial on mobile devices
+      encodeAfterRecord: true,
       // There is a known issue with some macOS machines, where the recording
       // will sometimes have a loud 'pop' or 'pop-click' sound. This flag
       // prevents getting audio from the microphone a few milliseconds after
-      // the begining of the recording. It also helps to remove the mouse
+      // the beginning of the recording. It also helps to remove the mouse
       // "click" sound from the output mp3 file.
-      startRecordingAt: 300,
-      deviceId: null
+      startRecordingAt: 300
     };
 
     this.activeStream = null;
@@ -15830,6 +15834,7 @@ var MicRecorder = function () {
     this.microphone = null;
     this.processor = null;
     this.startTime = 0;
+    this.rawChunksBuffer = null;
 
     Object.assign(this.config, config);
   }
@@ -15841,7 +15846,7 @@ var MicRecorder = function () {
 
 
   createClass(MicRecorder, [{
-    key: 'addMicrophoneListener',
+    key: "addMicrophoneListener",
     value: function addMicrophoneListener(stream) {
       var _this = this;
 
@@ -15864,60 +15869,42 @@ var MicRecorder = function () {
           return;
         }
 
-        // Send microphone data to LAME for MP3 encoding while recording.
-        _this.lameEncoder.encode(event.inputBuffer.getChannelData(0));
+        var rawChunk = event.inputBuffer.getChannelData(0);
+
+        if (_this.config.encodeAfterRecord) {
+          // Save copy of raw chunk for future encoding
+          _this.rawChunksBuffer.push(Object.assign([], rawChunk));
+        } else {
+          // Send microphone data to LAME for MP3 encoding while recording.
+          _this.lameEncoder.encode(rawChunk);
+        }
       };
 
-      // Begin retrieving microphone data.
-      this.microphone.connect(this.processor);
-      this.processor.connect(this.context.destination);
+      this.connectMicrophone();
     }
-  }, {
-    key: 'stop',
-
 
     /**
-     * Disconnect microphone, processor and remove activeStream
-     */
-    value: function stop() {
-      if (this.processor && this.microphone) {
-        // Clean up the Web Audio API resources.
-        this.microphone.disconnect();
-        this.processor.disconnect();
-
-        // If all references using this.context are destroyed, context is closed
-        // automatically. DOMException is fired when trying to close again
-        if (this.context && this.context.state !== 'closed') {
-          this.context.close();
-        }
-
-        this.processor.onaudioprocess = null;
-
-        // Stop all audio tracks. Also, removes recording icon from chrome tab
-        this.activeStream.getAudioTracks().forEach(function (track) {
-          return track.stop();
-        });
-      }
-
-      return this;
-    }
-  }, {
-    key: 'start',
-
-
-    /**
-     * Requests access to the microphone and start recording
+     * Requests access to the microphone and starts recording
      * @return Promise
      */
-    value: function start() {
+
+  }, {
+    key: "initialize",
+    value: function initialize() {
       var _this2 = this;
+
+      var _config = this.config,
+          deviceId = _config.deviceId,
+          encodeAfterRecord = _config.encodeAfterRecord;
 
       var AudioContext = window.AudioContext || window.webkitAudioContext;
       this.context = new AudioContext();
       this.config.sampleRate = this.context.sampleRate;
+      this.rawChunksBuffer = encodeAfterRecord ? [] : null;
       this.lameEncoder = new Encoder(this.config);
+      this.i = 0;
 
-      var audio = this.config.deviceId ? { deviceId: { exact: this.config.deviceId } } : true;
+      var audio = deviceId ? { deviceId: { exact: deviceId } } : true;
 
       return new Promise(function (resolve, reject) {
         navigator.mediaDevices.getUserMedia({ audio: audio }).then(function (stream) {
@@ -15928,24 +15915,116 @@ var MicRecorder = function () {
         });
       });
     }
-  }, {
-    key: 'getMp3',
 
+    /**
+     * Initializes or resumes recording
+     * @return Promise
+     */
+
+  }, {
+    key: "start",
+    value: function start() {
+      if (!this.processor || !this.microphone) {
+        return this.initialize();
+      } else {
+        this.connectMicrophone();
+        return Promise.resolve();
+      }
+    }
+
+    /**
+     * Pause recording
+     * @return Promise
+     */
+
+  }, {
+    key: "pause",
+    value: function pause() {
+      this.disconnectMicrophone();
+      return Promise.resolve();
+    }
+
+    /**
+     * Start retrieving microphone data
+     */
+
+  }, {
+    key: "connectMicrophone",
+    value: function connectMicrophone() {
+      if (this.processor && this.microphone) {
+        this.microphone.connect(this.processor);
+        this.processor.connect(this.context.destination);
+      }
+    }
+
+    /**
+     * Stop retrieving microphone data
+     */
+
+  }, {
+    key: "disconnectMicrophone",
+    value: function disconnectMicrophone() {
+      if (this.processor && this.microphone) {
+        this.microphone.disconnect();
+        this.processor.disconnect();
+      }
+    }
+
+    /**
+     * Disconnect microphone, processor and remove activeStream
+     * @return MicRecorder
+     */
+
+  }, {
+    key: "stop",
+    value: function stop() {
+      if (this.processor && this.microphone) {
+        // Clean up the Web Audio API resources.
+        this.disconnectMicrophone();
+
+        // If all references using this.context are destroyed, context is closed
+        // automatically. DOMException is fired when trying to close again
+        if (this.context && this.context.state !== "closed") {
+          this.context.close();
+        }
+
+        this.processor.onaudioprocess = null;
+
+        // Stop all audio tracks. Also, removes recording icon from chrome tab
+        this.activeStream.getAudioTracks().forEach(function (track) {
+          return track.stop();
+        });
+        this.processor = null;
+        this.microphone = null;
+      }
+
+      return this;
+    }
 
     /**
      * Return Mp3 Buffer and Blob with type mp3
-     * @return {Promise}
+     * @return Promise
      */
+
+  }, {
+    key: "getMp3",
     value: function getMp3() {
       var _this3 = this;
+
+      if (this.config.encodeAfterRecord) {
+        this.rawChunksBuffer.forEach(function (rawChunk) {
+          _this3.lameEncoder.encode(rawChunk);
+        });
+        this.rawChunksBuffer = null;
+      }
 
       var finalBuffer = this.lameEncoder.finish();
 
       return new Promise(function (resolve, reject) {
         if (finalBuffer.length === 0) {
-          reject(new Error('No buffer to send'));
+          reject(new Error("No buffer to send"));
         } else {
-          resolve([finalBuffer, new Blob(finalBuffer, { type: 'audio/mp3' })]);
+          resolve([finalBuffer, new Blob(finalBuffer, { type: "audio/mp3" })]);
           _this3.lameEncoder.clearBuffer();
         }
       });

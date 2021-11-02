@@ -1,10 +1,10 @@
-import { Mp3Encoder } from 'lamejs';
+import { Mp3Encoder } from "lamejs";
 
 class Encoder {
   constructor(config) {
     this.config = {
       sampleRate: 44100,
-      bitRate: 128
+      bitRate: 128,
     };
 
     Object.assign(this.config, config);
@@ -46,7 +46,7 @@ class Encoder {
   floatTo16BitPCM(input, output) {
     for (let i = 0; i < input.length; i++) {
       const s = Math.max(-1, Math.min(1, input[i]));
-      output[i] = (s < 0 ? s * 0x8000 : s * 0x7FFF);
+      output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
   }
 
@@ -86,6 +86,6 @@ class Encoder {
 
     return this.dataBuffer;
   }
-};
+}
 
 export default Encoder;
